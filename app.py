@@ -1,99 +1,176 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
+import time
 
-# 1. إعدادات وشكل الصفحة
+# 1. Page Configuration
 st.set_page_config(page_title="NASA Engine RUL Predictor", page_icon="✈️", layout="wide")
-st.title("✈️ توقع العمر المتبقي لمحركات الطائرات (NASA CMAPSS)")
-st.write("هذا التطبيق الذكي يتوقع متى سينهار محرك الطائرة بناءً على قراءات الحساسات وظروف التشغيل.")
 
-# 2. القائمة الجانبية (عشان نختار الداتا)
-st.sidebar.header("⚙️ إعدادات الرحلة")
-condition = st.sidebar.selectbox(
-    "اختر ظروف تشغيل الطيارة:",
-    ("FD001: ظروف ثابتة (عطل واحد)", 
-     "FD002: 6 ظروف متغيرة (عطل واحد)",
-     "FD003: ظروف ثابتة (عطلين) - 🚧 قريباً",
-     "FD004: 6 ظروف متغيرة (عطلين) - 🚧 قريباً")
+# 2. Main Title and Subtitle
+st.title("✈️ Predictive Maintenance: Engine RUL Prediction")
+st.markdown("### Predicting the Remaining Useful Life (RUL) of Aircraft Engines Based on Sensor Readings")
+st.markdown("---")
+
+# 3. Sidebar Configuration
+st.sidebar.header("⚙️ Model Settings")
+dataset_choice = st.sidebar.selectbox(
+    "Select Dataset (Operating Conditions):",
+    ["FD001 (1 Fault / 1 Operating Condition)", 
+     "FD002 (1 Fault / 6 Operating Conditions)", 
+     "FD003 (2 Faults / 1 Operating Condition)", 
+     "FD004 (2 Faults / 6 Operating Conditions)"]
 )
 
-# دالة سريعة لتجهيز أسماء العواميد
-def get_column_names():
-    return ['unit_nr', 'time_cycles'] + [f'setting_{i}' for i in range(1, 4)] + [f'sensor_{i}' for i in range(1, 22)]
+st.sidebar.markdown("---")
+uploaded_file = st.sidebar.file_uploader("📂 Upload Test Data File (.txt)", type=['txt'])
 
-# ==========================================
-# 🚀 لو اليوزر اختار FD001
-# ==========================================
-if condition == "FD001: ظروف ثابتة (عطل واحد)":
-    st.subheader("🛠️ الموديل المستخدم: Random Forest (دقة 93%)")
+# 4. Function to Load Models
+@st.cache_resource
+def load_models(choice):
     try:
-        # تحميل الملفات
-        model_1 = joblib.load('rf_model_fd001.pkl')
-        scaler_1 = joblib.load('scaler_fd001.pkl')
-        features_1 = joblib.load('features_fd001.pkl')
-        test_df1 = pd.read_csv('test_FD001.txt', sep=r'\s+', header=None, names=get_column_names())
-        
-        # اليوزر يختار رقم المحرك
-        unit_id = st.number_input("أدخل رقم المحرك لـ FD001 (من 1 لـ 100):", min_value=1, max_value=100, value=1)
-        
-        if st.button("توقع الانهيار 🔍"):
-            unit_data = test_df1[test_df1['unit_nr'] == unit_id].tail(1).copy() # ناخد آخر سطر
-            unit_data[features_1] = scaler_1.transform(unit_data[features_1]) # توحيد المقامات
-            prediction = model_1.predict(unit_data[features_1]) # التوقع
+        if "FD001" in choice:
+            model = joblib.load('model.pkl')
+            scaler = joblib.load('scaler.pkl')
+            return model, scaler, None
             
-            st.success(f"🚨 تحذير: المحرك رقم {unit_id} سينهار بعد حوالي: **{int(prediction[0])} دورة طيران** ✈️")
+        elif "FD002" in choice:
+            model = joblib.load('xgb_model_fd002.pkl')
+            scaler = joblib.load('scaler_fd002.pkl')
+            kmeans = joblib.load('kmeans_fd002.pkl') 
+            return model, scaler, kmeans
+            
+        elif "FD003" in choice:
+            model = joblib.load('model_FD003.pkl')
+            scaler = joblib.load('scaler_FD003.pkl')
+            return model, scaler, None
+            
+        elif "FD004" in choice:
+            model = joblib.load('xgb_model_fd004.pkl')
+            scaler = joblib.load('scaler_fd004.pkl')
+            kmeans = joblib.load('kmeans_fd004.pkl')
+            return model, scaler, kmeans
+            
     except Exception as e:
-        st.warning("⚠️ يرجى التأكد من وجود ملفات الموديل (rf_model_fd001.pkl) وملف الامتحان (test_FD001.txt) في الفولدر.")
+        return None, None, None
+        
+    return None, None, None
 
-# ==========================================
-# 🚀 لو اليوزر اختار FD002 (المستوى الوحش)
-# ==========================================
-elif condition == "FD002: 6 ظروف متغيرة (عطل واحد)":
-    st.subheader("🛠️ الموديل المستخدم: K-Means + XGBoost (دقة 84.4%)")
-    try:
-        # تحميل الملفات السحرية بتاعتنا
-        model_2 = joblib.load('xgb_model_fd002.pkl')
-        scaler_2 = joblib.load('scaler_fd002.pkl')
-        kmeans_2 = joblib.load('kmeans_fd002.pkl')
-        features_2 = joblib.load('features_fd002.pkl')
-        test_df2 = pd.read_csv('test_FD002.txt', sep=r'\s+', header=None, names=get_column_names())
+# 5. Execution when a file is uploaded
+if uploaded_file is not None:
+    st.success("✅ File uploaded successfully!")
+    
+    # Read the uploaded data
+    test_data = pd.read_csv(uploaded_file, sep=r'\s+', header=None)
+    
+    # Prepare column names
+    index_names = ['unit_number', 'time_in_cycles']
+    setting_names = ['setting1', 'setting2', 'setting3']
+    sensor_names = ['sensor{}'.format(i) for i in range(1, 22)]
+    col_names = index_names + setting_names + sensor_names
+    features = setting_names + sensor_names
+    
+    # Clean and structure uploaded data
+    test_data.dropna(axis=1, how='all', inplace=True)
+    test_data.columns = col_names
+    
+    st.write("📊 **Quick Glance at the Uploaded Data:**")
+    st.dataframe(test_data.head())
+    
+    st.markdown("---")
+    
+    # ==========================================
+    # Engine Selection Dropdown
+    # ==========================================
+    unique_engines = test_data['unit_number'].unique()
+    selected_engine = st.selectbox("🔍 Select the Engine Number to Inspect:", unique_engines)
+    
+    if st.button("🚀 Predict RUL"):
         
-        # اليوزر يختار رقم المحرك
-        unit_id = st.number_input("أدخل رقم المحرك لـ FD002 (من 1 لـ 259):", min_value=1, max_value=259, value=1)
-        
-        if st.button("توقع الانهيار 🔍"):
-            # 1. نجيب داتا المحرك ده بس
-            unit_data = test_df2[test_df2['unit_nr'] == unit_id].copy()
-            
-            # 2. نعمل Processing (المتوسط والانحراف لآخر 15 دورة)
-            features_to_process = [f'setting_{i}' for i in range(1, 4)] + [f'sensor_{i}' for i in range(1, 22)]
-            for col in features_to_process:
-                unit_data[col + '_mean'] = unit_data[col].rolling(15).mean()
-                unit_data[col + '_std'] = unit_data[col].rolling(15).std()
-            unit_data = unit_data.bfill()
-            
-            # 3. ناخد سطر "الإنقاذ" الأخير
-            unit_last = unit_data.tail(1).copy()
-            
-            # 4. الـ Scaling
-            cols_to_scale = features_to_process + [col + '_mean' for col in features_to_process] + [col + '_std' for col in features_to_process]
-            unit_last[cols_to_scale] = scaler_2.transform(unit_last[cols_to_scale])
-            
-            # 5. سحر الـ K-Means
-            cluster = kmeans_2.predict(unit_last[['setting_1', 'setting_2', 'setting_3']])
-            for i in range(6):
-                unit_last[f'Condition_{i}'] = (cluster == i).astype(int)
+        with st.spinner(f'Analyzing sensor readings for Engine #{selected_engine}...'):
+            try:
+                # Load Models
+                model, scaler, kmeans = load_models(dataset_choice)
+                if model is None:
+                    st.error("⚠️ Model files (.pkl) for this dataset are missing! Ensure they are saved in the same directory.")
+                    st.stop()
                 
-            # 6. التوقع النهائي
-            prediction = model_2.predict(unit_last[features_2])
-            
-            st.success(f"🚨 تحذير: المحرك رقم {unit_id} سينهار بعد حوالي: **{int(prediction[0])} دورة طيران** ✈️")
-            
-    except Exception as e:
-         st.warning(f"⚠️ يرجى التأكد من وجود ملفات FD002. الخطأ: {e}")
-
-# ==========================================
-# 🚧 لو اليوزر اختار أي حاجة تانية
-# ==========================================
+                current_features = features
+                
+                # Determine Dynamic Window
+                if "FD001" in dataset_choice: window = 15
+                elif "FD002" in dataset_choice: window = 5
+                elif "FD003" in dataset_choice: window = 30
+                elif "FD004" in dataset_choice: window = 5
+                
+                # Feature Engineering (Rolling Mean & Std)
+                for col in current_features:
+                    test_data[col + '_mean'] = test_data.groupby('unit_number')[col].transform(lambda x: x.rolling(window).mean())
+                    test_data[col + '_std'] = test_data.groupby('unit_number')[col].transform(lambda x: x.rolling(window).std())
+                test_data = test_data.bfill()
+                
+                # Extract Selected Engine Data
+                engine_data = test_data[test_data['unit_number'] == selected_engine].tail(1).copy()
+                
+                # Scaling
+                scaler_cols = list(scaler.feature_names_in_)
+                for col in scaler_cols:
+                    if col not in engine_data.columns:
+                        engine_data[col] = 0
+                        
+                engine_data[scaler_cols] = scaler.transform(engine_data[scaler_cols])
+                
+                # Clustering (K-Means)
+                if kmeans is not None:
+                    kmeans_cols = list(kmeans.feature_names_in_)
+                    engine_data['cluster'] = kmeans.predict(engine_data[kmeans_cols])
+                    engine_data = pd.get_dummies(engine_data, columns=['cluster'], prefix='Condition')
+                
+                # =========================================================
+                # 🔥 التعديل هنا: Final Feature Alignment (عشان مشكلة Random Forest)
+                # =========================================================
+                try:
+                    # لو الموديل XGBoost وحافظ الأسماء
+                    model_cols = list(model.feature_names_in_)
+                except AttributeError:
+                    # لو الموديل Random Forest ومش حافظ الأسماء، هناخدها من السكالر
+                    model_cols = list(scaler.feature_names_in_)
+                    if kmeans is not None:
+                        cluster_cols = [c for c in engine_data.columns if c.startswith('Condition_')]
+                        model_cols.extend(cluster_cols)
+                
+                X_final = engine_data.reindex(columns=model_cols, fill_value=0)
+                X_final = X_final[model_cols]
+                # =========================================================
+                
+                # RUL Prediction
+                real_prediction = int(model.predict(X_final)[0])
+                
+                st.markdown("---")
+                st.subheader(f"🎯 Final Result for Engine #{int(selected_engine)}:")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Engine Number", f"Engine #{int(selected_engine)}")
+                
+                if real_prediction < 30:
+                    col2.metric("Remaining Useful Life (RUL)", f"{real_prediction} Cycles", delta="- CRITICAL! Maintenance Required", delta_color="normal")
+                else:
+                    col2.metric("Remaining Useful Life (RUL)", f"{real_prediction} Cycles", delta="+ Healthy / Safe Condition", delta_color="normal")
+                
+                st.balloons()
+                st.markdown("---")
+                st.markdown(f"### 📈 Sensor Degradation History for Engine #{int(selected_engine)}")
+                
+                # بنجيب تاريخ المحرك ده من أول ما طار لحد آخر لحظة
+                engine_history = test_data[test_data['unit_number'] == selected_engine]
+                
+                chart_data = engine_history[['time_in_cycles', 'sensor13', 'sensor14']].set_index('time_in_cycles')
+                
+                # رسم بياني تفاعلي (الدكتور يقدر يزوم فيه)
+                st.line_chart(chart_data)
+                
+            except Exception as e:
+                st.error(f"⚠️ An error occurred during analysis: {e}")
+                st.info("Make sure you uploaded the correct test file corresponding to the selected model.")
 else:
-    st.info("🚧 جاري العمل على تدريب هذا الموديل المعقد.. انتظرونا قريباً!")
+    st.info("👈 Please upload the Test Data file from the sidebar to begin.")
